@@ -515,7 +515,7 @@ static void bs_rbd_exit(struct scsi_lu *lu)
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 
 	bs_thread_close(info);
-	rados_shutdown(&cluster);
+	rados_shutdown(cluster);
 }
 
 static struct backingstore_template rbd_bst = {
