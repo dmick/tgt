@@ -31,6 +31,7 @@
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <getopt.h>
 
 #include <linux/fs.h>
 #include <sys/epoll.h>
@@ -466,26 +467,114 @@ static void bs_rbd_close(struct scsi_lu *lu)
 	}
 }
 
+static void
+split_on_space(char *input, int *output_argc, char ***output_argv)
+{
+        char *tok, *local_input;
+        int argc = 0;
+
+        local_input = strdup(input);
+        tok = strtok(local_input, " ");
+        while (tok != NULL) {
+                argc++;
+                tok = strtok(NULL, " ");
+        }
+        free(local_input);
+        *output_argv = (char **)NULL;
+        *output_argc = 0;
+        if (argc != 0) {
+                char **argv;
+
+                // always add an extra null argument at the front
+                // getopt_long() demands it
+
+                *output_argv = argv =
+                        (char **)malloc((argc + 2)* sizeof(char *));
+                *output_argc = argc + 1;
+                *argv++ = strdup("d");
+                local_input = strdup(input);
+                tok = strtok(local_input, " ");
+                while (tok != NULL) {
+                        *argv++ = strdup(tok);
+                        tok = strtok(NULL, " ");
+                }
+                // terminate the array for tradition
+                *argv = (char *)NULL;
+        }
+}
+
 static tgtadm_err bs_rbd_init(struct scsi_lu *lu, char *bsopts)
 {
+	struct bs_thread_info *info = BS_THREAD_I(lu);
 	tgtadm_err ret = TGTADM_UNKNOWN_ERR;
 	int rados_ret;
-	struct bs_thread_info *info = BS_THREAD_I(lu);
 	struct active_rbd *rbd = RBDP(lu);
+	int argc = 0;
+	char **argv = NULL;
+	int c, i;
+	char *confname = NULL;
+	char *clientid = NULL;
+	char *optstring = "c:i:";
+	struct option lopts[] = {
+		{"conf", required_argument, NULL, 'c'},
+		{"id", required_argument, NULL, 'i'},
+		{NULL, 0, NULL, 0},
+	};
 
-	eprintf("bs_rbd_init bsopts=%s\n", bsopts);
-	rados_ret = rados_create(&rbd->cluster, NULL);
+	dprintf("bs_rbd_init bsopts=%s\n", bsopts);
+
+	split_on_space(bsopts, &argc, &argv);
+	if (argc) {
+		opterr = 0;	// don't warn about unknown opts
+		for (;;) {
+			c = getopt_long(argc, argv, optstring, lopts, NULL);
+			eprintf("bs_rbd_init: option char '%c'\n", c);
+			if (c == -1)
+				break;
+			switch (c) {
+			case 'c':
+				confname = strdup(optarg);
+				break;
+			case 'i':
+				clientid = strdup(optarg);
+				break;
+			case ':':
+				// missing option arg, error
+				eprintf("bsopts option '%c' missing value", optopt);
+				break;
+			case '?':
+				// unknown option
+			default:
+				// rados_conf_set?
+				break;
+			}
+		}
+	}
+	//
+	// reset for next call
+	optind = 0;
+
+	if (clientid)
+		eprintf("bs_rbd_init: clientid %s\n", clientid);
+	if (confname)
+		eprintf("bs_rbd_init: confname %s\n", confname);
+
+	/* clientid may be set by -i/--id */
+	rados_ret = rados_create(&rbd->cluster, clientid);
 	if (rados_ret < 0) {
 		eprintf("bs_rbd_init: rados_create: %d\n", rados_ret);
 		return ret;
 	}
-	/* read config from environment and then default files */
+	/*
+	 * Read config from environment, then conf file(s) which may
+	 * be set by confname
+	 */
 	rados_ret = rados_conf_parse_env(rbd->cluster, NULL);
 	if (rados_ret < 0) {
 		eprintf("bs_rbd_init: rados_conf_parse_env: %d\n", rados_ret);
 		goto fail;
 	}
-	rados_ret = rados_conf_read_file(rbd->cluster, NULL);
+	rados_ret = rados_conf_read_file(rbd->cluster, confname);
 	if (rados_ret < 0) {
 		eprintf("bs_rbd_init: rados_conf_read_file: %d\n", rados_ret);
 		goto fail;
@@ -496,9 +585,16 @@ static tgtadm_err bs_rbd_init(struct scsi_lu *lu, char *bsopts)
 		goto fail;
 	}
 	ret = bs_thread_open(info, bs_rbd_request, nr_iothreads);
-	if (ret == TGTADM_SUCCESS)
-		return ret;
 fail:
+	if (confname)
+		free(confname);
+	if (clientid)
+		free(clientid);
+	for (i = 0; i < argc; i++)
+		free(argv[i]);
+	if (argv)
+		free(argv);
+
 	return ret;
 }
 
@@ -507,6 +603,7 @@ static void bs_rbd_exit(struct scsi_lu *lu)
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 	struct active_rbd *rbd = RBDP(lu);
 
+	/* do this first to try to be sure there's no outstanding I/O */
 	bs_thread_close(info);
 	rados_shutdown(rbd->cluster);
 }
