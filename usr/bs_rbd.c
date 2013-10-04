@@ -466,13 +466,14 @@ static void bs_rbd_close(struct scsi_lu *lu)
 	}
 }
 
-static tgtadm_err bs_rbd_init(struct scsi_lu *lu)
+static tgtadm_err bs_rbd_init(struct scsi_lu *lu, char *bsopts)
 {
 	tgtadm_err ret = TGTADM_UNKNOWN_ERR;
 	int rados_ret;
 	struct bs_thread_info *info = BS_THREAD_I(lu);
 	struct active_rbd *rbd = RBDP(lu);
 
+	eprintf("bs_rbd_init bsopts=%s\n", bsopts);
 	rados_ret = rados_create(&rbd->cluster, NULL);
 	if (rados_ret < 0) {
 		eprintf("bs_rbd_init: rados_create: %d\n", rados_ret);
